@@ -55,7 +55,7 @@ const cleanAndParseJson = (text: string) => {
 const cleanChatResponseText = (text: string) => {
     if (!text) return "";
     let cleaned = text.trim();
-    const codeBlockRegex = /^```(?:json)?\s*([\s\S]*?)\s*```$/i;
+    const codeBlockRegex = /^```(?:json)?\s*([\s\S]*?)\s*```/i;
     const match = cleaned.match(codeBlockRegex);
     if (match) {
       cleaned = match[1].trim();
@@ -366,32 +366,87 @@ export const generateMicroActions = async (context: string, language: Language =
 }
 
 // ---------------------------------------------------------
-// 🔥 Fallback Data
+// 🔥 INSTANT / FALLBACK GENERATORS (NO API)
 // ---------------------------------------------------------
 
-export const getFallbackDailyInsights = (language: Language): DailyInsightsResult => {
+// Generates immediate content based on profile tags to avoid waiting for API
+export const generateInstantDailyInsights = (user: UserContext, language: Language): DailyInsightsResult => {
     const isKo = language === 'ko';
+    
+    // Simple logic to detect keywords
+    const physical = (user.physicalStatus || "").toLowerCase();
+    const mental = (user.mentalStatus || "").toLowerCase();
+    
+    let hormone = isKo ? "스트레스 호르몬 분석 중..." : "Analyzing Stress Hormones...";
+    let desc = isKo ? "현재 상태를 기반으로 정밀 분석을 준비하고 있습니다." : "Preparing detailed analysis based on your status.";
+    let sugg = isKo ? "물 한 잔을 마시며 심호흡을 하세요." : "Drink water and take deep breaths.";
+    let nutrient = isKo ? "종합 비타민" : "Multivitamin";
+    
+    if (physical.includes('목') || physical.includes('neck')) {
+        hormone = isKo ? "승모근 긴장 (Trapezius)" : "Trapezius Tension";
+        desc = isKo ? "스트레스로 인해 어깨 주변 근육이 수축된 상태입니다." : "Shoulder muscles contracted due to stress.";
+        sugg = isKo ? "매 시간 어깨를 으쓱여주세요." : "Shrug shoulders every hour.";
+    }
+
     return {
         medicalAnalysis: {
-            hormone: isKo ? "분석 대기 중" : "Analysis Pending",
-            hormoneDesc: isKo ? "현재 데이터로 호르몬 경향성을 분석하고 있습니다. 잠시 후 다시 시도해주세요." : "Analyzing hormonal trends. Please try again later.",
-            suggestion: isKo ? "충분한 수분 섭취와 휴식을 권장합니다." : "Hydration and rest are recommended.",
-            nutrient: isKo ? "종합 비타민" : "Multivitamin"
+            hormone: hormone,
+            hormoneDesc: desc,
+            suggestion: sugg,
+            nutrient: nutrient
         },
         customGuide: [
             {
                 type: 'physical',
                 icon: '🧘',
-                title: isKo ? '기본 스트레칭' : 'Basic Stretching',
-                exercise: isKo ? '목과 어깨를 가볍게 돌려주세요' : 'Rotate neck and shoulders gently',
-                tip: isKo ? '긴장을 푸는 것이 중요합니다.' : 'Relaxation is key.'
+                title: isKo ? '기본 이완 스트레칭' : 'Basic Relaxation',
+                exercise: isKo ? '편안하게 앉아 눈을 감으세요' : 'Sit comfortably and close eyes',
+                tip: isKo ? '3분간 호흡에 집중합니다.' : 'Focus on breath for 3 mins.'
             },
             {
                 type: 'mental',
                 icon: '🍵',
-                title: isKo ? '차 한 잔의 여유' : 'Tea Time',
-                exercise: isKo ? '따뜻한 물이나 차 마시기' : 'Drink warm water or tea',
-                tip: isKo ? '잠시 눈을 감고 호흡에 집중하세요.' : 'Close eyes and focus on breathing.'
+                title: isKo ? '마음 챙김' : 'Mindfulness',
+                exercise: isKo ? '따뜻한 차 한 잔' : 'Warm Tea',
+                tip: isKo ? '온기를 느끼며 천천히 마십니다.' : 'Sip slowly feeling the warmth.'
+            }
+        ]
+    };
+};
+
+export const generateInstantDailyPlan = (user: UserContext, lang: Language): ActionPlan => {
+    const isKo = lang === 'ko';
+    
+    // Generate basic plan instantly
+    return {
+        goal: isKo ? '오늘의 작은 시작' : "Today's Small Start",
+        actions: [
+            {
+                id: 'inst-1',
+                title: isKo ? '물 한 잔 마시기' : 'Drink Water',
+                description: isKo ? '신체 수분 공급 및 기분 전환' : 'Hydrate and refresh',
+                category: 'routine',
+                difficulty: 'easy',
+                completed: false,
+                estimated_time: '1min'
+            },
+            {
+                id: 'inst-2',
+                title: isKo ? '창문 열고 환기하기' : 'Open Window',
+                description: isKo ? '뇌에 신선한 산소 공급' : 'Fresh oxygen for the brain',
+                category: 'health',
+                difficulty: 'easy',
+                completed: false,
+                estimated_time: '2min'
+            },
+            {
+                id: 'inst-3',
+                title: isKo ? '1분간 눈 감고 있기' : 'Close Eyes 1min',
+                description: isKo ? '시각 정보 차단으로 뇌 휴식' : 'Rest brain by blocking vision',
+                category: 'mental',
+                difficulty: 'easy',
+                completed: false,
+                estimated_time: '1min'
             }
         ]
     };
@@ -480,10 +535,10 @@ export const generateDailyInsights = async (userContext: UserContext, language: 
         if (data && data.medicalAnalysis && data.customGuide) {
             return data as DailyInsightsResult;
         }
-        return getFallbackDailyInsights(language);
+        return generateInstantDailyInsights(userContext, language);
     } catch (e) {
         console.warn("Failed to generate daily insights, using fallback");
-        return getFallbackDailyInsights(language);
+        return generateInstantDailyInsights(userContext, language);
     }
 };
 
@@ -564,24 +619,6 @@ export const generateDailyPlanFromProfile = async (userContext: UserContext, lan
         }
         return plan;
     } catch (e) {
-        return null;
+        return generateInstantDailyPlan(userContext, language);
     }
 };
-
-export const getFallbackPlan = (user: UserContext, lang: Language): ActionPlan => {
-    const isKo = lang === 'ko';
-    return {
-        goal: isKo ? '오늘의 작은 시작' : "Today's Small Start",
-        actions: [
-            {
-                id: 'fb-1',
-                title: isKo ? '물 마시기' : 'Drink Water',
-                description: isKo ? '수분 보충' : 'Hydrate',
-                category: 'health',
-                difficulty: 'easy',
-                completed: false,
-                estimated_time: '1min'
-            }
-        ]
-    };
-}

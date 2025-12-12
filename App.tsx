@@ -1,8 +1,8 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeChat, sendMessageToGeminiStream, fileToGenerativePart, generateWelcomeMessage, resetChatSession, generateDailyPlanFromProfile, generateItemDetail } from './services/geminiService';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { initializeChat, sendMessageToGeminiStream, fileToGenerativePart, generateWelcomeMessage, resetChatSession, generateDailyPlanFromProfile, generateItemDetail, generateDailyInsights, generateInstantDailyPlan, generateInstantDailyInsights } from './services/geminiService';
 import { memoryService, getLocalDateString } from './services/memoryService'; 
-import { Message, Sender, ActionPlan, UserContext, Language, DailyChecklist, DailySummary, MicroAction, CustomGuideItem, MedicalAnalysisData } from './types';
+import { Message, Sender, ActionPlan, UserContext, Language, DailyChecklist, DailySummary, MicroAction, CustomGuideItem, MedicalAnalysisData, RichDetail } from './types';
 import { getTranslation } from './constants/translations';
 import ChatBubble from './components/ChatBubble';
 import ActionCard from './components/ActionCard';
@@ -12,7 +12,6 @@ import HistorySidebar from './components/HistorySidebar';
 import HistoryModal from './components/HistoryModal';
 import DetailModal from './components/DetailModal';
 import { Content } from "@google/genai";
-import { INITIAL_PROFILE_KO, INITIAL_PROFILE_EN } from './initial_profile';
 
 function App() {
   // Application State
@@ -59,6 +58,196 @@ function App() {
     }
   }, [showHistory]);
 
+  // --------------------------------------------------------------------------
+  // 🔥 CENTRALIZED BACKGROUND ENRICHMENT LOGIC
+  // --------------------------------------------------------------------------
+  const runBackgroundEnrichment = useCallback(async (context: UserContext, lang: Language) => {
+      const today = getLocalDateString();
+      console.log(`🚀 [Background] Starting enrichment for ${today}...`);
+
+      // 1. Enrich Daily Summary (Medical & Health Guides)
+      const currentSummaries = memoryService.getDailySummaries();
+      let summary = currentSummaries.find(s => s.date === today);
+
+      if (summary) {
+          // A. Enrich Medical Analysis
+          if (summary.medicalAnalysis && !summary.medicalAnalysis.detail) {
+              generateItemDetail(summary.medicalAnalysis.hormone, 'medical', context, lang).then(detail => {
+                  if (detail) {
+                      console.log("✅ [Background] Medical Analysis Enriched");
+                      // Re-fetch to ensure freshness
+                      const latestSummaries = memoryService.getDailySummaries();
+                      const latestSummary = latestSummaries.find(s => s.date === today);
+                      if (latestSummary && latestSummary.medicalAnalysis) {
+                          const updated = { ...latestSummary, medicalAnalysis: { ...latestSummary.medicalAnalysis, detail } };
+                          memoryService.saveDailySummary(updated);
+                          setHistorySummaries(prev => prev.map(s => s.date === today ? updated : s));
+                      }
+                  }
+              });
+          }
+
+          // B. Enrich Custom Guides (Loop)
+          if (summary.customGuide) {
+              summary.customGuide.forEach(async (guide, idx) => {
+                  if (!guide.detail) {
+                      const detail = await generateItemDetail(guide.title, 'health', context, lang);
+                      if (detail) {
+                          console.log(`✅ [Background] Guide '${guide.title}' Enriched`);
+                          // Re-fetch & Update
+                          const latestSummaries = memoryService.getDailySummaries();
+                          const latestSummary = latestSummaries.find(s => s.date === today);
+                          if (latestSummary && latestSummary.customGuide) {
+                              const updatedGuides = [...latestSummary.customGuide];
+                              updatedGuides[idx] = { ...updatedGuides[idx], detail };
+                              const updatedSummary = { ...latestSummary, customGuide: updatedGuides };
+                              memoryService.saveDailySummary(updatedSummary);
+                              setHistorySummaries(prev => prev.map(s => s.date === today ? updatedSummary : s));
+                          }
+                      }
+                  }
+              });
+          }
+      }
+
+      // 2. Enrich Checklist Items
+      const checklist = memoryService.getChecklistForDate(today);
+      if (checklist) {
+          checklist.items.forEach(async (item, idx) => {
+              if (!item.detail) {
+                  const detail = await generateItemDetail(item.title, 'action', context, lang);
+                  if (detail) {
+                      console.log(`✅ [Background] Action '${item.title}' Enriched`);
+                      // Re-fetch & Update
+                      const currentList = memoryService.getChecklistForDate(today);
+                      if (currentList) {
+                          const updatedItems = [...currentList.items];
+                          updatedItems[idx] = { ...updatedItems[idx], detail };
+                          const updatedList = { ...currentList, items: updatedItems };
+                          memoryService.saveChecklist(updatedList);
+                          
+                          // 🔥 CRITICAL: Update State Immediately so UI sees the detail
+                          setCurrentPlan(prev => {
+                              if (prev && currentList.date === today) {
+                                  return { ...prev, actions: updatedItems };
+                              }
+                              return prev;
+                          });
+                          
+                          // Trigger Report Refresh
+                          setChecklistRefreshTrigger(prev => prev + 1);
+                      }
+                  }
+              }
+          });
+      }
+  }, []);
+
+  // --------------------------------------------------------------------------
+  // 🔥 NEW: Background AI Upgrade (Replace Instant Content with AI Content)
+  // --------------------------------------------------------------------------
+  const upgradeDailyContentWithAI = useCallback(async (context: UserContext, lang: Language) => {
+      console.log("⚡ [Background] Upgrading Daily Content with AI...");
+      const today = getLocalDateString();
+      
+      // 1. Upgrade Insights (Summary)
+      const insights = await generateDailyInsights(context, lang);
+      if (insights) {
+          const latestSummaries = memoryService.getDailySummaries();
+          // Merge with existing logic (keep generation flag if needed, or overwrite)
+          const newSummary: DailySummary = {
+              date: today,
+              summary: lang === 'ko' ? "오늘의 건강 상태 분석 (AI Updated)" : "Daily Health Analysis (AI Updated)",
+              sentimentScore: Math.max(1, 10 - context.stressLevel),
+              healthTags: context.physicalStatus ? [context.physicalStatus.split(' ')[0]] : [],
+              careerTags: [],
+              keyFact: insights.medicalAnalysis.hormone,
+              medicalAnalysis: insights.medicalAnalysis,
+              customGuide: insights.customGuide,
+              isGenerated: true
+          };
+          memoryService.saveDailySummary(newSummary);
+          setHistorySummaries(prev => [...prev.filter(s => s.date !== today), newSummary]);
+          setChecklistRefreshTrigger(prev => prev + 1);
+          console.log("✅ [Background] Insights Upgraded");
+      }
+
+      // 2. Upgrade Action Plan (Checklist)
+      const plan = await generateDailyPlanFromProfile(context, lang);
+      if (plan) {
+          // Check if user already checked some items in the 'Instant' plan
+          const currentList = memoryService.getChecklistForDate(today);
+          const completedIds = currentList ? currentList.items.filter(i => i.completed).map(i => i.id) : [];
+          
+          // Map completed status if possible (optional, but good UX)
+          // For now, we replace actions but maybe keep completion rate logic if IDs match? 
+          // Since IDs are generated, it's safer to just replace, or append.
+          // Strategy: Just Replace for now as it's early in the session.
+          
+          memoryService.saveChecklist({ date: today, items: plan.actions, completionRate: 0, status: 'red' });
+          setCurrentPlan(plan);
+          setChecklistRefreshTrigger(prev => prev + 1);
+          console.log("✅ [Background] Plan Upgraded");
+      }
+      
+      // 3. Trigger Detail Enrichment for the NEW AI content
+      runBackgroundEnrichment(context, lang);
+
+  }, [runBackgroundEnrichment]);
+
+  // Effect: Run Enrichment on Mount / Login
+  useEffect(() => {
+      if (!userContext) return;
+      
+      const initDailyContent = async () => {
+          const today = getLocalDateString();
+          let summary = memoryService.getDailySummaries().find(s => s.date === today);
+
+          // If Summary missing, generate INSTANT basic one first
+          if (!summary) {
+              console.log("⚡ [Init] Generating INSTANT Daily Content...");
+              
+              // 1. Instant Insights
+              const instantInsights = generateInstantDailyInsights(userContext, language);
+              const newSummary: DailySummary = {
+                  date: today,
+                  summary: language === 'ko' ? "오늘의 건강 상태 분석" : "Daily Health Analysis",
+                  sentimentScore: Math.max(1, 10 - userContext.stressLevel),
+                  healthTags: userContext.physicalStatus ? [userContext.physicalStatus.split(' ')[0]] : [],
+                  careerTags: [],
+                  keyFact: instantInsights.medicalAnalysis.hormone,
+                  medicalAnalysis: instantInsights.medicalAnalysis,
+                  customGuide: instantInsights.customGuide,
+                  isGenerated: true
+              };
+              memoryService.saveDailySummary(newSummary);
+              setHistorySummaries(prev => [...prev.filter(s => s.date !== today), newSummary]);
+              
+              // 2. Instant Plan
+              // Check if plan exists (might have been created by onboarding)
+              let plan = memoryService.getChecklistForDate(today);
+              if (!plan) {
+                  const instantPlan = generateInstantDailyPlan(userContext, language);
+                  memoryService.saveChecklist({ date: today, items: instantPlan.actions, completionRate: 0, status: 'red' });
+                  setCurrentPlan(instantPlan);
+              }
+
+              // 3. Force UI Refresh
+              setChecklistRefreshTrigger(prev => prev + 1);
+              
+              // 4. Trigger AI Upgrade in Background
+              upgradeDailyContentWithAI(userContext, language);
+          } else {
+              // If exists, just run enrichment for details
+              runBackgroundEnrichment(userContext, language);
+          }
+      };
+
+      initDailyContent();
+
+  }, [userContext?.name, language, runBackgroundEnrichment, upgradeDailyContentWithAI]);
+
+
   // Initialize Session / Chat
   useEffect(() => {
     if (initializationRef.current) return;
@@ -92,8 +281,6 @@ function App() {
             setMessages(restoredMessages);
         } 
         
-        // 🔥 CRITICAL FIX: Pass the restored history to initializeChat
-        // This ensures the AI knows the context and doesn't treat a follow-up as a new conversation start.
         initializeChat(userContext, currentModel, userContext.language || 'ko', sdkHistory);
         
         const existingChecklist = memoryService.getChecklistForDate(today);
@@ -104,13 +291,6 @@ function App() {
         }
     } 
   }, []); 
-
-  useEffect(() => {
-    // Only trigger re-init if context changes significantly or language is manually synced
-    if (userContext && userContext.language !== language) {
-         // This effect is mainly for ensuring consistency if language changes externally
-    }
-  }, [language]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -125,20 +305,20 @@ function App() {
     setCurrentModel(newModel);
   };
 
-  // 🔥 UPDATED: Language Toggle - PRESERVE VISUAL DATA
+  // 🔥 UPDATED: Language Toggle
   const toggleLanguage = () => {
     const newLang: Language = language === 'ko' ? 'en' : 'ko';
     
-    // 1. Refresh Summaries (Sidebar)
+    // 1. Refresh Summaries
     setHistorySummaries(memoryService.getDailySummaries());
 
-    // 2. Update Profile & State
+    // 2. Update Profile
     let updatedContext = { ...userContext!, language: newLang };
     setUserContext(updatedContext);
     memoryService.saveUserProfile(updatedContext);
     setLanguage(newLang);
     
-    // 3. Update Checklist Title Only (Preserve Items)
+    // 3. Update Checklist Title
     if (currentPlan) {
         setCurrentPlan(prev => prev ? ({ 
             ...prev, 
@@ -146,22 +326,15 @@ function App() {
         }) : null);
     }
 
-    // 4. 🔥 CRITICAL FIX: Preserve Chat History for AI Context
-    // Convert current UI messages to SDK History format so the AI remembers the conversation
+    // 4. Preserve History Context
     const sdkHistory: Content[] = messages
-        .filter(m => !m.isError && !m.isTyping) // Exclude transient messages
+        .filter(m => !m.isError && !m.isTyping) 
         .map(m => ({
             role: m.sender === Sender.USER ? 'user' : 'model',
             parts: [{ text: m.text }]
         }));
 
-    // Re-initialize Chat with preserved history
     initializeChat(updatedContext, currentModel, newLang, sdkHistory);
-    
-    // 5. 🔥 IMPORTANT: Do NOT reload 'messages' from storage. 
-    // Keep the current visual state to prevent data flickering or loss.
-    
-    // Force refresh reports
     setChecklistRefreshTrigger(prev => prev + 1);
   };
 
@@ -189,51 +362,36 @@ function App() {
       setChecklistRefreshTrigger(prev => prev + 1); 
   };
 
-  const handleOnboardingComplete = (data: UserContext) => {
+  // --------------------------------------------------------------------------
+  // 🔥 ONBOARDING COMPLETE: Generate INSTANTLY + Upgrade Later
+  // --------------------------------------------------------------------------
+  const handleOnboardingComplete = async (data: UserContext) => {
+        // 1. Save Profile
         memoryService.saveUserProfile(data); 
         setUserContext(data);
         setLanguage(data.language); 
         
+        // Check if returning user or backup restore
         const hasHistory = memoryService.getDailySummaries().length > 0;
         if (hasHistory) {
             setHistorySummaries(memoryService.getDailySummaries());
             const today = getLocalDateString();
             const todayChecklist = memoryService.getChecklistForDate(today);
             
-            // 🔥 FIX: Explicitly set localized goal when loading demo data
             if (todayChecklist) {
                 const goalLabel = data.language === 'ko' ? "오늘의 작은 시작" : "Today's Small Start";
                 setCurrentPlan({ goal: goalLabel, actions: todayChecklist.items });
             }
-            
-            // 🔥 LOAD ONLY TODAY'S logs
-            const todayLogs = memoryService.getLogsForDate(today);
-            const sdkHistory: Content[] = []; // Prepare history for AI
-
-            if (todayLogs.length > 0) {
-                 const restoredMessages: Message[] = [];
-                 todayLogs.forEach(log => {
-                     if (log.userMessage?.trim() && log.userMessage !== "Started Re:Boot") {
-                         restoredMessages.push({ id: log.id + '_user', sender: Sender.USER, text: log.userMessage, timestamp: new Date(log.timestamp) });
-                         sdkHistory.push({ role: 'user', parts: [{ text: log.userMessage }] });
-                     }
-                     restoredMessages.push({ id: log.id + '_ai', sender: Sender.AI, text: log.aiResponse, timestamp: new Date(log.timestamp) });
-                     sdkHistory.push({ role: 'model', parts: [{ text: log.aiResponse }] });
-                 });
-                 setMessages(restoredMessages);
-            } else {
-                setMessages([]);
-            }
-            
-            // Initialize chat with history if any
-            initializeChat(data, currentModel, data.language, sdkHistory);
-
             setChecklistRefreshTrigger(prev => prev + 1);
+            runBackgroundEnrichment(data, data.language);
             return;
         }
 
+        // 2. New User Initialization
         initializeChat(data, currentModel, data.language);
         setIsLoading(true);
+
+        // A. Generate Welcome Message (Async is fine here)
         generateWelcomeMessage(data, data.language).then(welcomeData => {
             addMessage({
               id: 'welcome',
@@ -246,14 +404,33 @@ function App() {
             setIsLoading(false);
         });
         
-        generateDailyPlanFromProfile(data, data.language).then(plan => {
-             if(plan) {
-                 const today = getLocalDateString();
-                 memoryService.saveChecklist({ date: today, items: plan.actions, completionRate: 0, status: 'red' });
-                 setCurrentPlan(plan);
-                 setChecklistRefreshTrigger(prev => prev + 1);
-             }
-        });
+        // 🔥 B. Generate INSTANT Action Plan (Checklist) - No API Wait
+        const instantPlan = generateInstantDailyPlan(data, data.language);
+        const today = getLocalDateString();
+        memoryService.saveChecklist({ date: today, items: instantPlan.actions, completionRate: 0, status: 'red' });
+        setCurrentPlan(instantPlan);
+
+        // 🔥 C. Generate INSTANT Daily Summary (Medical/Health) - No API Wait
+        const instantInsights = generateInstantDailyInsights(data, data.language);
+        const newSummary: DailySummary = {
+              date: today,
+              summary: data.language === 'ko' ? "오늘의 건강 상태 분석" : "Daily Health Analysis",
+              sentimentScore: Math.max(1, 10 - data.stressLevel),
+              healthTags: data.physicalStatus ? [data.physicalStatus.split(' ')[0]] : [],
+              careerTags: [],
+              keyFact: instantInsights.medicalAnalysis.hormone,
+              medicalAnalysis: instantInsights.medicalAnalysis,
+              customGuide: instantInsights.customGuide,
+              isGenerated: true
+         };
+         memoryService.saveDailySummary(newSummary);
+         setHistorySummaries(prev => [...prev, newSummary]); 
+
+         // D. Force UI Refresh of Sidebar
+         setChecklistRefreshTrigger(prev => prev + 1);
+
+         // E. 🔥 KICK OFF AI UPGRADE IN BACKGROUND
+         upgradeDailyContentWithAI(data, data.language);
   };
 
   const handleToggleAction = (id: string) => {
@@ -282,22 +459,84 @@ function App() {
     }
   };
 
+  // 🔥 UPDATED: Open Detail with DOUBLE CHECK
   const handleOpenDetail = async (type: 'action' | 'health' | 'medical', data: any) => {
       if (!userContext) return;
+      
+      // 1. Optimistic Open
       setDetailModalState({ type, data });
-      if (!data.detail) {
-          try {
-              let title = "";
-              if (type === 'action') title = data.title;
-              else if (type === 'health') title = data.title;
-              else if (type === 'medical') title = data.hormone;
-              const richDetail = await generateItemDetail(title, type, userContext, language);
-              if (richDetail) {
-                  const updatedData = { ...data, detail: richDetail };
-                  setDetailModalState({ type, data: updatedData });
-              }
-          } catch (e) { console.error("Detail fetch failed", e); }
+
+      // 2. 🔥 Check Storage (Truth) because React State might be slightly stale or data passed in is stale
+      let existingDetail = data.detail;
+      const today = getLocalDateString();
+
+      if (!existingDetail) {
+          if (type === 'action') {
+              const checklist = memoryService.getChecklistForDate(today);
+              const item = checklist?.items.find(i => i.id === data.id);
+              if (item?.detail) existingDetail = item.detail;
+          } else if (type === 'medical') {
+              const summary = memoryService.getDailySummaries().find(s => s.date === today);
+              if (summary?.medicalAnalysis?.detail) existingDetail = summary.medicalAnalysis.detail;
+          } else if (type === 'health') {
+              const summary = memoryService.getDailySummaries().find(s => s.date === today);
+              const item = summary?.customGuide?.find(g => g.title === data.title);
+              if (item?.detail) existingDetail = item.detail;
+          }
       }
+
+      // 3. If found in storage, update modal state immediately
+      if (existingDetail) {
+          console.log("✅ Detail found in storage. Skipping generation.");
+          setDetailModalState({ type, data: { ...data, detail: existingDetail } });
+          return;
+      }
+
+      // 4. Only if totally missing, generate (Fallback)
+      try {
+          let title = "";
+          if (type === 'action') title = data.title;
+          else if (type === 'health') title = data.title;
+          else if (type === 'medical') title = data.hormone;
+
+          console.log("⏳ Detail not found. Generating on-demand...");
+          const richDetail = await generateItemDetail(title, type, userContext, language);
+          
+          if (richDetail) {
+              const updatedData = { ...data, detail: richDetail };
+              setDetailModalState({ type, data: updatedData });
+
+              // Save to Storage & State Logic (Reusable)
+              if (type === 'action') {
+                  const checklist = memoryService.getChecklistForDate(today);
+                  if (checklist) {
+                      const updatedItems = checklist.items.map(item => 
+                          item.id === data.id ? { ...item, detail: richDetail } : item
+                      );
+                      memoryService.saveChecklist({ ...checklist, items: updatedItems });
+                      if (currentPlan) setCurrentPlan(prev => prev ? { ...prev, actions: updatedItems } : null);
+                  }
+              } else if (type === 'health' || type === 'medical') {
+                  const summaries = memoryService.getDailySummaries();
+                  const summary = summaries.find(s => s.date === today);
+                  if (summary) {
+                      let newSummary = { ...summary };
+                      if (type === 'medical') {
+                          newSummary.medicalAnalysis = { ...newSummary.medicalAnalysis!, detail: richDetail };
+                      } else {
+                          if (newSummary.customGuide) {
+                              newSummary.customGuide = newSummary.customGuide.map(g => 
+                                  g.title === data.title ? { ...g, detail: richDetail } : g
+                              );
+                          }
+                      }
+                      memoryService.saveDailySummary(newSummary);
+                      setHistorySummaries(prev => prev.map(s => s.date === today ? newSummary : s));
+                  }
+              }
+              setChecklistRefreshTrigger(prev => prev + 1);
+          }
+      } catch (e) { console.error("Detail fetch failed", e); }
   };
 
   const handleChecklistUpdate = (checklist: DailyChecklist) => {
@@ -311,7 +550,6 @@ function App() {
     if (e.target.files && e.target.files[0]) setSelectedImage(e.target.files[0]);
   };
 
-  // 🔥 NEW: Abort Handler
   const handleStopGeneration = () => {
     if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -333,7 +571,6 @@ function App() {
     addMessage({ id: Date.now().toString(), sender: Sender.USER, text: text || (img ? t.imgUpload : ""), timestamp: new Date(), image: base64 });
     setIsLoading(true);
 
-    // Prepare Placeholder AI Message
     const aiMessageId = Date.now().toString() + '_ai';
     addMessage({ 
         id: aiMessageId, 
@@ -343,7 +580,6 @@ function App() {
         isTyping: true 
     });
 
-    // Create AbortController
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
@@ -353,7 +589,6 @@ function App() {
             userContext!, 
             base64,
             (partialText) => {
-                // 🔥 Live Update Callback
                 setMessages(prev => prev.map(msg => 
                     msg.id === aiMessageId 
                         ? { ...msg, text: partialText, isTyping: false } 
@@ -362,7 +597,6 @@ function App() {
             },
             abortController.signal
         ).then(res => {
-            // Finalize with metadata
             setMessages(prev => prev.map(msg => 
                 msg.id === aiMessageId 
                     ? { ...msg, text: res.fullText || msg.text, isTyping: false, model: res.modelUsed, groundingSources: res.groundingSources } 
@@ -372,21 +606,18 @@ function App() {
         });
 
     } catch(e: any) {
-        // 🔥 Handle Abort/Cancellation Explicitly
         if (e.name === 'AbortError' || e.message?.includes('aborted')) {
             setMessages(prev => prev.map(msg => 
                 msg.id === aiMessageId 
                     ? { 
                         ...msg, 
-                        // Append cancellation notice to whatever text was generated so far
                         text: (msg.text || "") + "\n\n" + `(🚫 ${t.msgCancelled})`,
                         isTyping: false,
-                        isError: false // It's not a system error, it's user action
+                        isError: false
                       } 
                     : msg
             ));
         } else {
-            // Handle Actual Errors
             setMessages(prev => prev.map(msg => 
                 msg.id === aiMessageId 
                     ? { ...msg, text: t.errorCommon, isError: true, isTyping: false } 
@@ -496,17 +727,13 @@ function App() {
                     <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyPress} placeholder={t.inputPlaceholder} className="w-full border border-gray-300 rounded-2xl py-3 pl-4 pr-12 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent resize-none max-h-32 shadow-sm" rows={1} style={{ minHeight: '48px' }} />
                 </div>
                 
-                {/* 🔥 STOP BUTTON TOGGLE (Dynamic Spinner) */}
                 {isLoading ? (
                     <button 
                         onClick={handleStopGeneration} 
                         className="relative p-3 rounded-full flex-shrink-0 transition-all duration-200 shadow-md bg-white border border-red-100 group w-12 h-12 flex items-center justify-center"
                         title="Stop Generation"
                     >
-                        {/* Spinning Ring */}
                         <div className="absolute inset-0 rounded-full border-4 border-red-100 border-t-red-500 animate-spin"></div>
-                        
-                        {/* Stop Icon */}
                         <div className="relative z-10 w-3 h-3 bg-red-500 rounded-sm group-hover:bg-red-600 transition-colors"></div>
                     </button>
                 ) : (
@@ -519,7 +746,6 @@ function App() {
                     </button>
                 )}
             </div>
-            {/* Legal Disclaimer in Footer */}
             <div className="text-center mt-2 flex items-center justify-center gap-1.5 opacity-60">
                 <svg className="w-3 h-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                 <p className="text-xs text-gray-500">{t.disclaimer}</p>

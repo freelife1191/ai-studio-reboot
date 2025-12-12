@@ -470,6 +470,29 @@ const DeepDiveReport: React.FC<DeepDiveReportProps> = ({ userContext, onReset, r
             </AreaChart>
           </ResponsiveContainer>
         </div>
+
+        {/* Chart Interpretive Guide (Legend) */}
+        <div className="mt-5 bg-gray-50 rounded-xl p-4 border border-gray-100 text-xs text-gray-600">
+             <h4 className="font-bold text-gray-700 mb-3 flex items-center gap-1.5 uppercase tracking-wide text-[10px]">
+                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                 {t.chartDescTitle}
+             </h4>
+             <div className="grid grid-cols-1 gap-2.5">
+                <div className="flex items-start gap-2 bg-white p-2.5 rounded-lg border border-gray-100 shadow-sm">
+                    {t.chartDescTrendUp}
+                </div>
+                <div className="flex items-start gap-2 bg-white p-2.5 rounded-lg border border-gray-100 shadow-sm">
+                    {t.chartDescTrendDown}
+                </div>
+                <div className="flex items-start gap-2 bg-white p-2.5 rounded-lg border border-gray-100 shadow-sm">
+                    {t.chartDescTrendStable}
+                </div>
+                <div className="flex items-start gap-2 bg-white p-2.5 rounded-lg border border-gray-100 shadow-sm">
+                    {t.chartDescVolatile}
+                </div>
+             </div>
+        </div>
+
       </div>
       
        {/* Reset Section */}
